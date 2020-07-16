@@ -44,7 +44,8 @@ namespace :sidekiq do
   task :install do
     on roles fetch(:sidekiq_roles) do |role|
       git_plugin.switch_user(role) do
-        git_plugin.create_systemd_template
+        # git_plugin.create_systemd_template
+        git_plugin.create_all_systemd_templates
         if fetch(:sidekiq_service_unit_user) == :system
           execute :sudo, :systemctl, "enable", fetch(:sidekiq_service_unit_name)
         else
@@ -86,7 +87,7 @@ namespace :sidekiq do
     end
   end
 
-  def compiled_template
+  def compiled_template(index: nil)
     search_paths = [
       File.expand_path(
           File.join(*%w[.. .. .. generators capistrano sidekiq systemd templates sidekiq.service.capistrano.erb]),
@@ -98,22 +99,47 @@ namespace :sidekiq do
     ERB.new(template).result(binding)
   end
 
-  def create_systemd_template
-    ctemplate = compiled_template
+  def process_list
+    @process_list ||= pid_files.each_with_index do |pid_file, idx|
+      within release_path do
+        yield(pid_file, idx)
+      end
+    end
+  end
+
+  def sidekiq_processes
+    @sidekiq_processes ||= [].tap do |array|
+      process_options = fetch(:sidekiq_options_per_process)
+
+      process_options&.each do |option|
+        array << option
+      end
+    end
+  end
+
+  def create_all_systemd_templates
+    sidekiq_processes.each.with_index(0) do |_object, index|
+      create_systemd_template(index: index)
+    end
+  end
+
+  def create_systemd_template(index: nil)
+    ctemplate = compiled_template(index: index)
     systemd_path = fetch(:service_unit_path, fetch_systemd_unit_path)
+    filename =     [(fetch :sidekiq_service_unit_name), index].join('---')
 
     if fetch(:sidekiq_service_unit_user) == :user
       backend.execute :mkdir, "-p", systemd_path
     end
     backend.upload!(
         StringIO.new(ctemplate),
-        "/tmp/#{fetch :sidekiq_service_unit_name}.service"
+        "/tmp/#{filename}.service"
     )
     if fetch(:sidekiq_service_unit_user) == :system
-      backend.execute :sudo, :mv, "/tmp/#{fetch :sidekiq_service_unit_name}.service", "#{systemd_path}/#{fetch :sidekiq_service_unit_name}.service"
+      backend.execute :sudo, :mv, "/tmp/#{filename}.service", "#{systemd_path}/#{filename}.service"
       backend.execute :sudo, :systemctl, "daemon-reload"
     else
-      backend.execute :mv, "/tmp/#{fetch :sidekiq_service_unit_name}.service", "#{systemd_path}/#{fetch :sidekiq_service_unit_name}.service"
+      backend.execute :mv, "/tmp/#{filename}.service", "#{systemd_path}/#{filename}.service"
       backend.execute :systemctl, "--user", "daemon-reload"
     end
   end
